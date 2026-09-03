@@ -1,0 +1,43 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Data / runtime
+data/
+*.db
+*.sqlite3
+*.log
+
+# Local config & secrets
+.env
+.env.*
+!.env.example
+deploy/env/*.env
+!deploy/env/*.env.example
+deploy/nginx/certs/*.pem
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

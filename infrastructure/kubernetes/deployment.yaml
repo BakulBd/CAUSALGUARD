@@ -1,0 +1,84 @@
+# Reference Kubernetes manifest (compose is the supported target in 1.1).
+# Point CAUSALGUARD_DATABASE__URL at managed PostgreSQL for a real deployment.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: causalguard
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: causalguard-config
+  namespace: causalguard
+data:
+  CAUSALGUARD_ENVIRONMENT: "production"
+  CAUSALGUARD_LOG_FORMAT: "json"
+  CAUSALGUARD_TELEMETRY__SOURCE_MODE: "auto"
+  CAUSALGUARD_TELEMETRY__PROMETHEUS_URL: "http://prometheus-k8s.monitoring:9090"
+  CAUSALGUARD_SANDBOX__MODE: "simulated"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: causalguard-backend
+  namespace: causalguard
+  labels: { app: causalguard, component: backend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: causalguard, component: backend }
+  template:
+    metadata:
+      labels: { app: causalguard, component: backend }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: backend
+          image: ghcr.io/OWNER/causalguard-backend:latest
+          ports: [{ containerPort: 8000, name: http }]
+          envFrom:
+            - configMapRef: { name: causalguard-config }
+          resources:
+            requests: { cpu: "250m", memory: 256Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 10
+          # ROCm nodes only:
+          # resources.limits["amd.com/gpu"]: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: causalguard-backend
+  namespace: causalguard
+  labels: { app: causalguard }
+spec:
+  type: ClusterIP
+  selector: { app: causalguard, component: backend }
+  ports:
+    - { name: http, port: 8000, targetPort: http }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: causalguard-backend
+  namespace: causalguard
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: causalguard-backend }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+# A Prometheus Operator ServiceMonitor scraping port `http` path `/metrics`
+# completes the observability wiring.

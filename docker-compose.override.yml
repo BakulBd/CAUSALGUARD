@@ -1,0 +1,32 @@
+# Local development overrides — auto-merged by `docker compose up`.
+# Adds hot-reload, source bind-mounts, console logging and exposed ports.
+# Delete or override this file for a production-shaped run.
+
+services:
+  causalguard-backend:
+    build:
+      target: builder
+    environment:
+      PYTHONPATH: /app
+      CAUSALGUARD_ENVIRONMENT: development
+      CAUSALGUARD_LOG_FORMAT: console
+      CAUSALGUARD_LOG_LEVEL: DEBUG
+      CAUSALGUARD_SECURITY__RATE_LIMIT_ENABLED: "false"
+    command: ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./backend:/app/backend
+      - backend-data:/app/data
+    ports:
+      - "8000:8000"
+
+  causalguard-frontend:
+    ports:
+      - "5173:8080"
+
+  postgres-primary:
+    ports:
+      - "5432:5432"
+
+  prometheus:
+    ports:
+      - "9090:9090"

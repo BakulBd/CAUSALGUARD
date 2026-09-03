@@ -1,0 +1,6 @@
+# TLS certificates for the production edge proxy go here:
+#   fullchain.pem   (server certificate + chain)
+#   privkey.pem     (private key)
+#
+# For local testing run:  ./scripts/gen_self_signed_certs.sh
+# For production, use certificates from your CA / Let's Encrypt.

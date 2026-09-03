@@ -1,0 +1,163 @@
+# CausalGuard — hardened single-host stack.
+#
+#   cp deploy/env/backend.env.example      deploy/env/backend.env
+#   cp deploy/env/postgres.env.example     deploy/env/postgres.env
+#   cp deploy/env/postgres-exporter.env.example deploy/env/postgres-exporter.env
+#   docker compose up -d --build
+#
+# `docker-compose.override.yml` (auto-loaded) adds local-dev conveniences.
+# For the TLS edge proxy:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+name: causalguard
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  causalguard:
+    driver: bridge
+
+volumes:
+  pgdata:
+  backend-data:
+  prometheus-data:
+
+services:
+  causalguard-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: causalguard/backend:${CAUSALGUARD_TAG:-local}
+    restart: unless-stopped
+    env_file:
+      - deploy/env/backend.env
+    environment:
+      CAUSALGUARD_ENVIRONMENT: production
+      CAUSALGUARD_LOG_FORMAT: json
+      CAUSALGUARD_DATABASE__URL: sqlite+aiosqlite:////app/data/causalguard.db
+      CAUSALGUARD_TELEMETRY__PROMETHEUS_URL: http://prometheus:9090
+      CAUSALGUARD_TELEMETRY__SOURCE_MODE: ${CAUSALGUARD_SOURCE_MODE:-simulated}
+    volumes:
+      - backend-data:/app/data
+    networks: [causalguard]
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 1g }
+        reservations: { cpus: "0.25", memory: 256m }
+    logging: *default-logging
+    # AMD ROCm passthrough — uncomment on a ROCm host.
+    # devices:
+    #   - "/dev/kfd:/dev/kfd"
+    #   - "/dev/dri:/dev/dri"
+    # group_add: ["video", "render"]
+
+  causalguard-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: causalguard/frontend:${CAUSALGUARD_TAG:-local}
+    restart: unless-stopped
+    networks: [causalguard]
+    depends_on:
+      causalguard-backend:
+        condition: service_healthy
+    ports:
+      - "${CAUSALGUARD_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 128m }
+    logging: *default-logging
+
+  postgres-primary:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - deploy/env/postgres.env
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "track_io_timing=on"
+      - "-c"
+      - "autovacuum_naptime=15s"
+      - "-c"
+      - "log_autovacuum_min_duration=0"
+      - "-c"
+      - "log_lock_waits=on"
+      - "-c"
+      - "log_min_duration_statement=500"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [causalguard]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 1g }
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks: [causalguard]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    restart: unless-stopped
+    env_file:
+      - deploy/env/postgres-exporter.env
+    networks: [causalguard]
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    logging: *default-logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    command:
+      - "--path.rootfs=/host"
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks: [causalguard]
+    logging: *default-logging

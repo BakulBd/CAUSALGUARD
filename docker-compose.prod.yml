@@ -1,0 +1,48 @@
+# Production profile: TLS edge proxy in front of the frontend + backend.
+#
+#   ./scripts/gen_self_signed_certs.sh            # or drop real certs in deploy/nginx/certs/
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# This file is NOT auto-merged; passing it explicitly also means
+# docker-compose.override.yml is ignored, so you get a production-shaped run.
+
+services:
+  causalguard-backend:
+    environment:
+      CAUSALGUARD_ENVIRONMENT: production
+      CAUSALGUARD_LOG_FORMAT: json
+      CAUSALGUARD_SECURITY__HSTS_ENABLED: "true"
+      CAUSALGUARD_SERVER__TRUSTED_HOSTS: ${CAUSALGUARD_TRUSTED_HOSTS:-*}
+      CAUSALGUARD_SERVER__CORS_ORIGINS: ${CAUSALGUARD_CORS_ORIGINS:-https://localhost}
+    deploy:
+      replicas: ${CAUSALGUARD_BACKEND_REPLICAS:-2}
+      restart_policy:
+        condition: on-failure
+        max_attempts: 5
+
+  causalguard-frontend:
+    ports: []            # only the edge proxy is published
+    expose:
+      - "8080"
+
+  edge:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      causalguard-frontend:
+        condition: service_healthy
+    ports:
+      - "${CAUSALGUARD_HTTPS_PORT:-443}:8443"
+      - "${CAUSALGUARD_HTTP_PORT:-80}:8080"
+    volumes:
+      - ./deploy/nginx/edge.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    networks: [causalguard]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/healthz"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
